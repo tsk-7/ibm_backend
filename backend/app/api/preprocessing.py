@@ -1,0 +1,50 @@
+from fastapi import APIRouter, Body
+
+from app.schemas.preprocessing import (
+    CreateColumnRequest,
+    DuplicateRequest,
+    DtypeRequest,
+    MissingValuesRequest,
+    RenameColumnRequest,
+)
+from app.services.preprocessing_service import (
+    convert_dtype,
+    create_column,
+    delete_column,
+    process_duplicates,
+    process_missing_values,
+    rename_column,
+)
+
+
+router = APIRouter(prefix="/datasets", tags=["preprocessing"])
+
+
+@router.post("/{dataset_id}/preprocess/missing-values")
+def missing_values(dataset_id: str, request: MissingValuesRequest):
+    return process_missing_values(dataset_id, request.column, request.method, request.value)
+
+
+@router.post("/{dataset_id}/preprocess/duplicates")
+def duplicates(dataset_id: str, request: DuplicateRequest = Body(default=DuplicateRequest())):
+    return process_duplicates(dataset_id, request.action)
+
+
+@router.post("/{dataset_id}/preprocess/dtype")
+def dtype(dataset_id: str, request: DtypeRequest):
+    return convert_dtype(dataset_id, request.column, request.dtype)
+
+
+@router.post("/{dataset_id}/columns/rename")
+def rename(dataset_id: str, request: RenameColumnRequest):
+    return rename_column(dataset_id, request.old_name, request.new_name)
+
+
+@router.delete("/{dataset_id}/columns/{column_name}")
+def delete(dataset_id: str, column_name: str):
+    return delete_column(dataset_id, column_name)
+
+
+@router.post("/{dataset_id}/columns/create")
+def create(dataset_id: str, request: CreateColumnRequest):
+    return create_column(dataset_id, request.name, request.operation)
