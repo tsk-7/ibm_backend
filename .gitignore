@@ -1,9 +1,14 @@
 .venv/
+.env
+**/.env
+*.pyc
 **/__pycache__/
 backend/.pytest_cache/
 backend/.tmp/
 backend/.env
 backend/database/*.db
+backend/storage/chroma/
+backend/storage/models/
 backend/data/uploads/*
 backend/data/processed/*
 backend/data/backups/*

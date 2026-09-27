@@ -1,15 +1,20 @@
+import hmac
+import logging
+import os
+import time
 from typing import Literal
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Header, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
-from app.services.dataset_service import dataset_info, dataset_profile
-from app.services.health_service import dataset_health
-from app.services.statistics_service import calculate_statistics
-from app.services.visualization_service import recommendations
+from app.ai.action_manager import cancel_confirmation, execute_confirmation
+from app.ai.agent import answer_chat
+from app.ai.rag.manager import reindex_knowledge
+from app.ai.rag.retriever import retrieve
 
 
 router = APIRouter(prefix="/agent", tags=["agent"])
+logger = logging.getLogger(__name__)
 
 
 class AgentTurn(BaseModel):
@@ -18,85 +23,64 @@ class AgentTurn(BaseModel):
 
 
 class AgentChatRequest(BaseModel):
-    dataset_id: str = Field(min_length=1)
+    dataset_id: str | None = Field(default=None, max_length=64, pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
     message: str = Field(min_length=1, max_length=4000)
+    conversation_id: str | None = Field(default=None, max_length=80)
     history: list[AgentTurn] = Field(default_factory=list, max_length=40)
 
 
-def _contains_any(message: str, terms: tuple[str, ...]) -> bool:
-    return any(term in message for term in terms)
+class AgentConfirmRequest(BaseModel):
+    confirmation_id: str = Field(min_length=20, max_length=100)
+    confirm: bool
 
 
 @router.post("/chat")
-def chat(request: AgentChatRequest):
-    info = dataset_info(request.dataset_id)
-    message = request.message.strip().lower()
-    tools_used = []
+async def chat(request: AgentChatRequest, http_request: Request):
+    request_id = http_request.state.request_id
+    started = time.perf_counter()
+    logger.info("Agent request started request_id=%s dataset_id=%s", request_id, request.dataset_id or "none")
+    history = [{"role": turn.role, "content": turn.content} for turn in request.history]
+    try:
+        response = await answer_chat(request.message, request.dataset_id, request.conversation_id, history, request_id)
+        logger.info(
+            "Agent request completed request_id=%s duration_ms=%s success=%s",
+            request_id, round((time.perf_counter() - started) * 1000, 2), not response["error"],
+        )
+        return response
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="Dataset not found.") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    if _contains_any(message, ("duplicate", "duplicated")):
-        profile = dataset_profile(request.dataset_id)
-        tools_used.append("dataset_profile")
-        answer = f"{profile['duplicate_rows']} duplicate rows were found in {info['filename']}."
-    elif _contains_any(message, ("missing", "null", "nan")):
-        profile = dataset_profile(request.dataset_id)
-        tools_used.append("dataset_profile")
-        missing = profile["missing_values"]
-        columns = [f"{column}: {count}" for column, count in missing["by_column"].items() if count]
-        detail = "; ".join(columns) if columns else "No columns have missing values."
-        answer = f"There are {missing['total']} missing values. {detail}"
-    elif _contains_any(message, ("quality", "health", "score")):
-        report = dataset_health(request.dataset_id)
-        tools_used.append("dataset_health")
-        answer = (
-            f"Data quality score: {report['overall_score']}/100. "
-            f"Completeness: {report['completeness']}%, consistency: {report['consistency']}%, "
-            f"validity: {report['validity']}%."
-        )
-    elif _contains_any(message, ("statistic", "average", "mean", "median", "maximum", "minimum")):
-        statistics = calculate_statistics(request.dataset_id)
-        tools_used.append("calculate_statistics")
-        numeric = statistics["numerical"]
-        if numeric:
-            details = [
-                f"{column}: mean {values['mean']}, median {values['median']}, "
-                f"min {values['minimum']}, max {values['maximum']}"
-                for column, values in list(numeric.items())[:8]
-            ]
-            answer = "Numerical summary: " + "; ".join(details)
-        else:
-            answer = "This dataset has no numerical columns to summarize."
-    elif _contains_any(message, ("chart", "visualization", "visualisation", "plot", "graph")):
-        chart_recommendations = recommendations(request.dataset_id)["recommendations"]
-        tools_used.append("visualization_recommendations")
-        suggestions = [
-            f"{item['chart_type']} ({item['x_column']}"
-            + (f" vs {item['y_column']}" if item.get("y_column") else "")
-            + ")"
-            for item in chart_recommendations[:5]
-        ]
-        answer = (
-            f"I found {len(chart_recommendations)} chart recommendations. "
-            + ("Examples: " + "; ".join(suggestions) if suggestions else "There are no chart recommendations for these columns.")
-        )
-    elif _contains_any(message, ("overview", "summar", "shape", "column", "row", "dataset", "data")):
-        tools_used.append("dataset_info")
-        columns = ", ".join(info["column_names"])
-        answer = (
-            f"{info['filename']} has {info['rows']} rows and {info['columns']} columns. "
-            f"Columns: {columns}."
-        )
-    else:
-        answer = (
-            "I can answer questions about this dataset's overview, missing values, duplicate rows, "
-            "data quality, numerical statistics, and chart recommendations. General knowledge and "
-            "RAG answers require an LLM agent, which is not configured on this backend."
-        )
 
-    return {
-        "message": answer,
-        "dataset_id": request.dataset_id,
-        "citations": [],
-        "tools_used": tools_used,
-        "operations": [],
-        "pending_confirmation": None,
-    }
+@router.post("/confirm")
+def confirm_action(request: AgentConfirmRequest, http_request: Request):
+    if not request.confirm:
+        cancelled = cancel_confirmation(request.confirmation_id)
+        return {"success": cancelled, "verified": False, "message": "Action cancelled." if cancelled else "This confirmation is invalid or expired."}
+    return execute_confirmation(request.confirmation_id, http_request.state.request_id)
+
+
+@router.post("/reindex")
+def reindex(authorization: str | None = Header(default=None)):
+    expected_token = os.getenv("AGENT_ADMIN_TOKEN", "")
+    if expected_token and not hmac.compare_digest(authorization or "", f"Bearer {expected_token}"):
+        raise HTTPException(status_code=403, detail="Not authorized.")
+    try:
+        return reindex_knowledge()
+    except (FileNotFoundError, RuntimeError, ValueError):
+        logger.exception("Knowledge reindex failed")
+        raise HTTPException(status_code=503, detail="Knowledge indexing is temporarily unavailable.")
+    except Exception as exc:
+        logger.exception("Knowledge reindex failed: %s", type(exc).__name__)
+        raise HTTPException(status_code=503, detail="Knowledge indexing is temporarily unavailable.") from exc
+
+
+@router.get("/knowledge/search")
+def knowledge_search(q: str = Query(min_length=1, max_length=4000), k: int = Query(default=5, ge=1, le=20)):
+    try:
+        results = retrieve(q, k)
+    except Exception as exc:
+        logger.info("Knowledge search unavailable: %s", type(exc).__name__)
+        raise HTTPException(status_code=503, detail="Knowledge search is temporarily unavailable.") from exc
+    return {"results": results}

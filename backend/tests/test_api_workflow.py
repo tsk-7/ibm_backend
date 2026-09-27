@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 def client(tmp_path, monkeypatch):
     monkeypatch.setenv("DATAINSIGHT_DB_PATH", str(tmp_path / "database" / "test.db"))
     monkeypatch.setenv("DATAINSIGHT_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("AI_EAGER_INITIALIZE", "false")
     from app.main import app
 
     with TestClient(app) as test_client:
@@ -31,7 +32,10 @@ def upload_sample(client):
 
 
 def test_health_upload_preview_profile_and_listing(client):
-    assert client.get("/api/health").json() == {"status": "ok", "database": "ok"}
+    health = client.get("/api/health").json()
+    assert health["status"] == "ok"
+    assert health["database"] == "ok"
+    assert {"backend", "ai", "vector_store", "knowledge_base"}.issubset(health)
     dataset_id, _ = upload_sample(client)
 
     datasets = client.get("/api/datasets")
@@ -74,7 +78,9 @@ def test_agent_chat_answers_dataset_questions_and_discloses_limits(client):
         json={"dataset_id": dataset_id, "message": "Explain quantum mechanics", "history": []},
     )
     assert unsupported_response.status_code == 200
-    assert "LLM agent, which is not configured" in unsupported_response.json()["message"]
+    knowledge_answer = unsupported_response.json()
+    assert "LLM is not configured" in knowledge_answer["answer"]
+    assert knowledge_answer["citations"][0]["source"].startswith("knowledge_base/")
 
 
 def test_real_data_analysis_preprocessing_history_and_download(client, tmp_path):
