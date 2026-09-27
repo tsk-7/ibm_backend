@@ -13,11 +13,24 @@ from app.services.preprocessing_service import (
     delete_column,
     process_duplicates,
     process_missing_values,
+    preprocessing_summary,
+    preview_duplicates,
+    preview_missing_values,
     rename_column,
 )
 
 
 router = APIRouter(prefix="/datasets", tags=["preprocessing"])
+
+
+@router.get("/{dataset_id}/preprocessing/summary")
+def preprocessing_summary_route(dataset_id: str):
+    return preprocessing_summary(dataset_id)
+
+
+@router.post("/{dataset_id}/preprocess/missing-values/preview")
+def missing_values_preview(dataset_id: str, request: MissingValuesRequest):
+    return preview_missing_values(dataset_id, request.column, request.method, request.value)
 
 
 @router.post("/{dataset_id}/preprocess/missing-values")
@@ -28,6 +41,11 @@ def missing_values(dataset_id: str, request: MissingValuesRequest):
 @router.post("/{dataset_id}/preprocess/duplicates")
 def duplicates(dataset_id: str, request: DuplicateRequest = Body(default=DuplicateRequest())):
     return process_duplicates(dataset_id, request.action)
+
+
+@router.post("/{dataset_id}/preprocess/duplicates/preview")
+def duplicates_preview(dataset_id: str):
+    return preview_duplicates(dataset_id)
 
 
 @router.post("/{dataset_id}/preprocess/dtype")

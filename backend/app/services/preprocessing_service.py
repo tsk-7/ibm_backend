@@ -10,7 +10,7 @@ import pandas as pd
 
 from app.database.database import get_connection
 from app.services.dataset_service import load_current
-from app.utils.dataframe_utils import missing_count
+from app.utils.dataframe_utils import column_metadata, dataframe_records, json_value, missing_count
 from app.utils.file_utils import data_directory, save_dataframe_csv, utc_now
 
 
@@ -43,41 +43,156 @@ def _commit(dataset_id: str, frame: pd.DataFrame, operation: str, column_name: s
 
 def _require_column(frame: pd.DataFrame, column: str) -> None:
     if column not in frame.columns:
-        raise ValueError(f"Column does not exist: {column}")
+        raise ValueError(f"Column '{column}' does not exist in this dataset.")
+
+
+def preprocessing_summary(dataset_id: str) -> dict:
+    dataset, frame = load_current(dataset_id)
+    columns = column_metadata(frame)
+    total_cells = len(frame) * len(frame.columns)
+    missing_total = int(frame.isna().sum().sum())
+    affected = [column for column in columns if column["missing_count"]]
+    highest_count = max(columns, key=lambda item: item["missing_count"], default=None)
+    highest_percentage = max(
+        columns,
+        key=lambda item: item["missing_count"] / len(frame) if len(frame) else 0,
+        default=None,
+    )
+    return {
+        "dataset_id": dataset.dataset_id,
+        "rows": int(len(frame)),
+        "columns_count": int(len(frame.columns)),
+        "missing": {
+            "total_cells": missing_total,
+            "percentage": round(100 * missing_total / total_cells, 2) if total_cells else 0.0,
+            "columns_affected": len(affected),
+            "columns": [
+                {
+                    "column": item["name"],
+                    "dtype": item["dtype"],
+                    "kind": item["kind"],
+                    "missing_count": item["missing_count"],
+                    "missing_percentage": round(100 * item["missing_count"] / len(frame), 2) if len(frame) else 0.0,
+                    "non_missing_count": len(frame) - item["missing_count"],
+                }
+                for item in columns
+            ],
+            "highest_count_column": highest_count["name"] if highest_count and highest_count["missing_count"] else None,
+            "highest_percentage_column": highest_percentage["name"] if highest_percentage and highest_percentage["missing_count"] else None,
+            "supported_methods": ["remove_rows", "mean", "median", "mode", "custom", "ffill", "bfill"],
+        },
+        "duplicates": {
+            "count": int(frame.duplicated().sum()),
+            "percentage": round(100 * int(frame.duplicated().sum()) / len(frame), 2) if len(frame) else 0.0,
+            "rows": int(len(frame)),
+        },
+        "columns": columns,
+    }
+
+
+def _validate_missing_values(frame: pd.DataFrame, column: str | None, method: str, value: Any) -> list[str]:
+    supported = {"remove_rows", "mean", "median", "mode", "custom", "ffill", "bfill"}
+    if method not in supported:
+        raise ValueError("Unsupported missing-value method.")
+    if column is not None:
+        _require_column(frame, column)
+    targets = [column] if column is not None else list(frame.columns)
+    if not targets or missing_count(frame, column) == 0:
+        label = f"Column '{column}'" if column is not None else "Dataset"
+        raise ValueError(f"{label} contains no missing values.")
+    if method in {"mean", "median"}:
+        numeric = [target for target in targets if pd.api.types.is_numeric_dtype(frame[target])]
+        if column is not None and not numeric:
+            label = "Mean" if method == "mean" else "Median"
+            raise ValueError(f"{label} imputation requires a numerical column.")
+        if not numeric:
+            label = "Mean" if method == "mean" else "Median"
+            raise ValueError(f"{label} imputation requires at least one numerical column.")
+        targets = numeric
+    if method == "custom" and value is None:
+        raise ValueError("A non-null value is required for custom imputation.")
+    if method in {"mean", "median", "mode"}:
+        for target in targets:
+            values = frame[target]
+            if values.isna().any() and values.dropna().empty:
+                label = "mean" if method == "mean" else "median" if method == "median" else "mode"
+                raise ValueError(f"Cannot calculate {label} for entirely missing column '{target}'.")
+    return targets
+
+
+def preview_missing_values(dataset_id: str, column: str | None, method: str, value: Any = None) -> dict:
+    _, frame = load_current(dataset_id)
+    targets = _validate_missing_values(frame, column, method, value)
+    before = missing_count(frame, column)
+    replacement: Any = None
+    if method in {"mean", "median", "mode"}:
+        replacements = {}
+        for target in targets:
+            series = frame[target]
+            if method == "mean":
+                selected = series.mean()
+            elif method == "median":
+                selected = series.median()
+            else:
+                modes = series.mode(dropna=True)
+                selected = modes.iloc[0] if not modes.empty else None
+            replacements[target] = json_value(selected)
+        replacement = replacements.get(column) if column is not None else replacements
+    elif method == "custom":
+        replacement = json_value(value)
+    preview = frame.copy()
+    if method == "remove_rows":
+        preview = preview.dropna(subset=[column] if column else None)
+    elif method in {"mean", "median", "mode"}:
+        for target in targets:
+            series = preview[target]
+            selected = series.mean() if method == "mean" else series.median() if method == "median" else series.mode(dropna=True).iloc[0]
+            preview[target] = series.fillna(selected)
+    elif method == "custom":
+        if column is None:
+            preview = preview.fillna(value)
+        else:
+            preview[column] = preview[column].fillna(value)
+    elif method == "ffill":
+        if column is None:
+            preview = preview.ffill()
+        else:
+            preview[column] = preview[column].ffill()
+    elif method == "bfill":
+        if column is None:
+            preview = preview.bfill()
+        else:
+            preview[column] = preview[column].bfill()
+    return {
+        "dataset_id": dataset_id,
+        "column": column,
+        "method": method,
+        "missing_before": before,
+        "estimated_missing_after": missing_count(preview, column),
+        "replacement_value": replacement,
+    }
 
 
 def process_missing_values(dataset_id: str, column: str | None, method: str, value: Any = None) -> dict:
     _, frame = load_current(dataset_id)
-    if column is not None:
-        _require_column(frame, column)
+    targets = _validate_missing_values(frame, column, method, value)
     before_rows = len(frame)
     before_missing = missing_count(frame, column)
     if method == "remove_rows":
         frame = frame.dropna(subset=[column] if column else None)
     elif method == "mean":
-        targets = [column] if column else list(frame.select_dtypes(include=["number"]).columns)
-        if not targets:
-            raise ValueError("Mean imputation requires at least one numerical column")
         for target in targets:
-            if not pd.api.types.is_numeric_dtype(frame[target]):
-                raise ValueError(f"Mean imputation requires a numerical column: {target}")
             mean = frame[target].mean()
             if pd.isna(mean) and frame[target].isna().any():
                 raise ValueError(f"Cannot calculate mean for entirely missing column: {target}")
             frame[target] = frame[target].fillna(mean)
     elif method == "median":
-        targets = [column] if column else list(frame.select_dtypes(include=["number"]).columns)
-        if not targets:
-            raise ValueError("Median imputation requires at least one numerical column")
         for target in targets:
-            if not pd.api.types.is_numeric_dtype(frame[target]):
-                raise ValueError(f"Median imputation requires a numerical column: {target}")
             median = frame[target].median()
             if pd.isna(median) and frame[target].isna().any():
                 raise ValueError(f"Cannot calculate median for entirely missing column: {target}")
             frame[target] = frame[target].fillna(median)
     elif method == "mode":
-        targets = [column] if column else list(frame.columns)
         for target in targets:
             modes = frame[target].mode(dropna=True)
             if modes.empty and frame[target].isna().any():
@@ -85,14 +200,15 @@ def process_missing_values(dataset_id: str, column: str | None, method: str, val
             if not modes.empty:
                 frame[target] = frame[target].fillna(modes.iloc[0])
     elif method == "custom":
-        if value is None:
-            raise ValueError("A non-null value is required for custom imputation")
         if column:
             frame[column] = frame[column].fillna(value)
         else:
             frame = frame.fillna(value)
     elif method in {"ffill", "bfill"}:
-        frame = frame.ffill() if method == "ffill" else frame.bfill()
+        if column is None:
+            frame = frame.ffill() if method == "ffill" else frame.bfill()
+        else:
+            frame[column] = frame[column].ffill() if method == "ffill" else frame[column].bfill()
     else:
         raise ValueError("Invalid preprocessing method")
     after_missing = missing_count(frame, column)
@@ -107,14 +223,40 @@ def process_duplicates(dataset_id: str, action: str) -> dict:
     rows_before = len(frame)
     duplicate_count = int(frame.duplicated().sum())
     if action == "detect":
-        return {"duplicate_count": duplicate_count, "rows_before": rows_before, "rows_after": rows_before}
+        return {
+            "duplicate_count": duplicate_count,
+            "count": duplicate_count,
+            "percentage": round(100 * duplicate_count / rows_before, 2) if rows_before else 0.0,
+            "rows_before": rows_before,
+            "rows_after": rows_before,
+        }
     if action != "remove":
         raise ValueError("Invalid duplicate action")
     if duplicate_count == 0:
-        return {"duplicate_count": 0, "rows_before": rows_before, "rows_after": rows_before, "success": True}
+        return {"duplicate_count": 0, "count": 0, "percentage": 0.0, "rows_before": rows_before,
+            "rows_after": rows_before, "duplicates_removed": 0, "success": True}
     frame = frame.drop_duplicates()
     _commit(dataset_id, frame, "Remove duplicates", None, rows_before, f"{duplicate_count} duplicate rows removed")
-    return {"duplicate_count": duplicate_count, "rows_before": rows_before, "rows_after": len(frame), "success": True}
+    return {"duplicate_count": duplicate_count, "count": duplicate_count,
+            "percentage": round(100 * duplicate_count / rows_before, 2) if rows_before else 0.0,
+            "rows_before": rows_before, "rows_after": len(frame),
+            "duplicates_removed": rows_before - len(frame), "success": True}
+
+
+def preview_duplicates(dataset_id: str, sample_limit: int = 10) -> dict:
+    _, frame = load_current(dataset_id)
+    duplicate_mask = frame.duplicated(keep="first")
+    duplicate_count = int(duplicate_mask.sum())
+    samples = dataframe_records(frame.loc[duplicate_mask].head(sample_limit))
+    return {
+        "dataset_id": dataset_id,
+        "duplicate_count": duplicate_count,
+        "percentage": round(100 * duplicate_count / len(frame), 2) if len(frame) else 0.0,
+        "rows_before": int(len(frame)),
+        "estimated_rows_after_removal": int(len(frame) - duplicate_count),
+        "sample_columns": [str(column) for column in frame.columns],
+        "sample_duplicate_rows": samples,
+    }
 
 
 def _convert_dtype(series: pd.Series, dtype: str) -> pd.Series:

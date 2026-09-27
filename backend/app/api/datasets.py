@@ -8,6 +8,8 @@ from app.services.dataset_service import (
     list_datasets,
     upload_dataset,
 )
+from app.services.dataset_service import load_current
+from app.utils.dataframe_utils import column_metadata
 
 
 router = APIRouter(prefix="/datasets", tags=["datasets"])
@@ -54,3 +56,9 @@ def get_dataset_preview(
 @router.get("/{dataset_id}/profile")
 def get_dataset_profile(dataset_id: str):
     return dataset_profile(dataset_id)
+
+
+@router.get("/{dataset_id}/columns")
+def get_dataset_columns(dataset_id: str):
+    _, frame = load_current(dataset_id)
+    return {"columns": column_metadata(frame)}
