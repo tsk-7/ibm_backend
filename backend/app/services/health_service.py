@@ -10,6 +10,10 @@ def _percentage(numerator: int, denominator: int) -> float:
 
 def dataset_health(dataset_id: str) -> dict:
     _, frame = load_current(dataset_id)
+    from app.services.dataset_profiler import profile_dataset
+
+    profile = profile_dataset(dataset_id)
+    columns = profile["columns"]
     cells = len(frame) * len(frame.columns)
     missing = int(frame.isna().sum().sum())
     duplicate_rows = int(frame.duplicated().sum())
@@ -32,6 +36,41 @@ def dataset_health(dataset_id: str) -> dict:
     consistency = round(100.0 - duplicate_percentage, 2)
     validity = round(100.0 - outlier_percentage, 2)
     overall = round((completeness + consistency + validity) / 3, 2)
+
+    column_health = []
+    for column in columns:
+        status = "good"
+        reasons = []
+        if column["null_count"] > 0:
+            status = "warning"
+            reasons.append(f"{column['null_count']} missing values")
+        if column.get("outlier_count", 0) > 0:
+            status = "critical" if status == "warning" else "warning"
+            reasons.append(f"{column['outlier_count']} outliers")
+        if column.get("kind") in {"text", "categorical"} and column["unique_count"] > 50:
+            status = "warning"
+            reasons.append("high cardinality")
+        column_health.append({
+            "column": column["name"],
+            "status": status,
+            "missing": column["null_count"],
+            "missing_percentage": column["null_percentage"],
+            "duplicates": None,
+            "outliers": column.get("outlier_count"),
+            "dtype_concerns": None,
+            "reasons": reasons,
+        })
+
+    recommendations = []
+    if missing > 0:
+        recommendations.append(f"{missing} missing values are present across the dataset; review affected columns before analysis.")
+    if duplicate_rows > 0:
+        recommendations.append(f"{duplicate_rows} duplicate rows were detected and may distort counts or visual summaries.")
+    if outlier_cells > 0:
+        recommendations.append(f"{outlier_cells} numeric outlier values were flagged using the 1.5×IQR rule.")
+    if not recommendations:
+        recommendations.append("No structural quality issues were detected in the current dataset profile.")
+
     return {
         "overall_score": overall,
         "completeness": completeness,
@@ -42,6 +81,10 @@ def dataset_health(dataset_id: str) -> dict:
         "outlier_percentage": outlier_percentage,
         "duplicates": duplicate_percentage,
         "outliers": outlier_percentage,
+        "rows": int(len(frame)),
+        "columns": int(len(frame.columns)),
+        "column_health": column_health,
+        "recommendations": recommendations,
         "scoring": {
             "completeness": "100 - missing cells / all cells * 100",
             "consistency": "100 - duplicate rows / all rows * 100",

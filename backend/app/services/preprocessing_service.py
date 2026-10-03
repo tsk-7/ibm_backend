@@ -46,6 +46,44 @@ def _require_column(frame: pd.DataFrame, column: str) -> None:
         raise ValueError(f"Column '{column}' does not exist in this dataset.")
 
 
+def _series_stats(series: pd.Series) -> dict[str, Any]:
+    non_missing = series.dropna()
+    stats: dict[str, Any] = {
+        "count": int(non_missing.count()),
+        "missing_count": int(series.isna().sum()),
+    }
+    if pd.api.types.is_numeric_dtype(series) and not pd.api.types.is_bool_dtype(series):
+        stats.update({
+            "mean": json_value(float(non_missing.mean())) if not non_missing.empty else None,
+            "median": json_value(float(non_missing.median())) if not non_missing.empty else None,
+            "mode": json_value(non_missing.mode(dropna=True).iloc[0]) if not non_missing.empty and not non_missing.mode(dropna=True).empty else None,
+            "std": json_value(float(non_missing.std(ddof=1))) if len(non_missing) > 1 else 0.0,
+            "variance": json_value(float(non_missing.var(ddof=1))) if len(non_missing) > 1 else 0.0,
+            "min": json_value(float(non_missing.min())) if not non_missing.empty else None,
+            "max": json_value(float(non_missing.max())) if not non_missing.empty else None,
+            "q1": json_value(float(non_missing.quantile(0.25))) if not non_missing.empty else None,
+            "q3": json_value(float(non_missing.quantile(0.75))) if not non_missing.empty else None,
+            "iqr": json_value(float(non_missing.quantile(0.75) - non_missing.quantile(0.25))) if not non_missing.empty else None,
+        })
+    elif pd.api.types.is_datetime64_any_dtype(series.dtype):
+        stats.update({
+            "min": json_value(non_missing.min()) if not non_missing.empty else None,
+            "max": json_value(non_missing.max()) if not non_missing.empty else None,
+            "unique_count": int(non_missing.nunique()),
+        })
+    else:
+        counts = non_missing.value_counts()
+        stats.update({
+            "unique_count": int(non_missing.nunique()),
+            "mode": json_value(counts.index[0]) if not counts.empty else None,
+            "top_values": [
+                {"value": json_value(value), "count": int(count), "percentage": round(100 * count / len(non_missing), 2) if len(non_missing) else 0.0}
+                for value, count in counts.head(5).items()
+            ],
+        })
+    return stats
+
+
 def preprocessing_summary(dataset_id: str) -> dict:
     dataset, frame = load_current(dataset_id)
     columns = column_metadata(frame)
@@ -146,8 +184,15 @@ def preview_missing_values(dataset_id: str, column: str | None, method: str, val
     elif method in {"mean", "median", "mode"}:
         for target in targets:
             series = preview[target]
-            selected = series.mean() if method == "mean" else series.median() if method == "median" else series.mode(dropna=True).iloc[0]
-            preview[target] = series.fillna(selected)
+            if method == "mean":
+                selected = series.mean()
+            elif method == "median":
+                selected = series.median()
+            else:
+                modes = series.mode(dropna=True)
+                selected = modes.iloc[0] if not modes.empty else None
+            if selected is not None:
+                preview[target] = series.fillna(selected)
     elif method == "custom":
         if column is None:
             preview = preview.fillna(value)
@@ -163,6 +208,21 @@ def preview_missing_values(dataset_id: str, column: str | None, method: str, val
             preview = preview.bfill()
         else:
             preview[column] = preview[column].bfill()
+
+    affected = int(frame[column].isna().sum()) if column else int(frame.isna().sum().sum())
+    before_stats = _series_stats(frame[column]) if column else {"all_columns": {name: _series_stats(frame[name]) for name in frame.columns}}
+    after_stats = _series_stats(preview[column]) if column else {"all_columns": {name: _series_stats(preview[name]) for name in preview.columns}}
+    impact: dict[str, Any] = {"rows_affected": affected}
+    if column is not None and pd.api.types.is_numeric_dtype(frame[column]) and not pd.api.types.is_bool_dtype(frame[column]):
+        before_mean = frame[column].mean()
+        after_mean = preview[column].mean()
+        before_std = frame[column].std(ddof=1) if frame[column].dropna().count() > 1 else 0.0
+        after_std = preview[column].std(ddof=1) if preview[column].dropna().count() > 1 else 0.0
+        impact.update({
+            "mean_change": json_value(after_mean - before_mean),
+            "std_change": json_value(after_std - before_std),
+            "variance_change": json_value((preview[column].var(ddof=1) if preview[column].dropna().count() > 1 else 0.0) - (frame[column].var(ddof=1) if frame[column].dropna().count() > 1 else 0.0)),
+        })
     return {
         "dataset_id": dataset_id,
         "column": column,
@@ -170,6 +230,96 @@ def preview_missing_values(dataset_id: str, column: str | None, method: str, val
         "missing_before": before,
         "estimated_missing_after": missing_count(preview, column),
         "replacement_value": replacement,
+        "rows_affected": affected,
+        "before": before_stats,
+        "after": after_stats,
+        "impact": impact,
+    }
+
+
+def preview_standardization(dataset_id: str, column: str) -> dict:
+    _, frame = load_current(dataset_id)
+    _require_column(frame, column)
+    series = frame[column].dropna()
+    if series.empty:
+        raise ValueError(f"Column '{column}' contains no non-missing values.")
+    mean = float(series.mean())
+    std = float(series.std(ddof=1)) if len(series) > 1 else 0.0
+    if std == 0:
+        standardized = pd.Series(0.0, index=series.index)
+    else:
+        standardized = (frame[column] - mean) / std
+    before = _series_stats(frame[column])
+    after = _series_stats(standardized)
+    return {
+        "dataset_id": dataset_id,
+        "column": column,
+        "method": "standardization",
+        "before": before,
+        "after": after,
+        "mean_before": json_value(mean),
+        "std_before": json_value(std),
+        "mean_after": json_value(float(standardized.mean())),
+        "std_after": json_value(float(standardized.std(ddof=1))) if len(standardized.dropna()) > 1 else 0.0,
+    }
+
+
+def preview_normalization(dataset_id: str, column: str) -> dict:
+    _, frame = load_current(dataset_id)
+    _require_column(frame, column)
+    values = frame[column].dropna()
+    if values.empty:
+        raise ValueError(f"Column '{column}' contains no non-missing values.")
+    minimum = float(values.min())
+    maximum = float(values.max())
+    if maximum == minimum:
+        normalized = pd.Series(0.0, index=frame.index)
+    else:
+        normalized = (frame[column] - minimum) / (maximum - minimum)
+    before = _series_stats(frame[column])
+    after = _series_stats(normalized)
+    return {
+        "dataset_id": dataset_id,
+        "column": column,
+        "method": "normalization",
+        "before": before,
+        "after": after,
+        "min_before": json_value(minimum),
+        "max_before": json_value(maximum),
+        "rows_affected": int(frame[column].isna().sum()),
+        "min_after": json_value(float(normalized.min())),
+        "max_after": json_value(float(normalized.max())),
+    }
+
+
+def preview_iqr_analysis(dataset_id: str, column: str) -> dict:
+    _, frame = load_current(dataset_id)
+    _require_column(frame, column)
+    series = frame[column].dropna()
+    if series.empty:
+        raise ValueError(f"Column '{column}' contains no non-missing values.")
+    q1 = float(series.quantile(0.25))
+    q3 = float(series.quantile(0.75))
+    iqr = q3 - q1
+    lower_bound = q1 - 1.5 * iqr
+    upper_bound = q3 + 1.5 * iqr
+    outlier_mask = (series < lower_bound) | (series > upper_bound)
+    outlier_count = int(outlier_mask.sum())
+    outlier_values = [json_value(value) for value in series[outlier_mask].head(10).tolist()]
+    return {
+        "dataset_id": dataset_id,
+        "column": column,
+        "method": "iqr_outlier_analysis",
+        "q1": json_value(q1),
+        "q3": json_value(q3),
+        "iqr": json_value(iqr),
+        "lower_bound": json_value(lower_bound),
+        "upper_bound": json_value(upper_bound),
+        "outlier_count": outlier_count,
+        "outlier_percentage": round(100.0 * outlier_count / len(series), 2) if len(series) else 0.0,
+        "rows_affected": outlier_count,
+        "sample_outlier_values": outlier_values,
+        "before": _series_stats(frame[column]),
     }
 
 

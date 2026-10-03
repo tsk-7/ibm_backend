@@ -11,11 +11,14 @@ from app.services.preprocessing_service import (
     convert_dtype,
     create_column,
     delete_column,
+    preview_iqr_analysis,
+    preview_missing_values,
+    preview_normalization,
+    preview_standardization,
     process_duplicates,
     process_missing_values,
     preprocessing_summary,
     preview_duplicates,
-    preview_missing_values,
     rename_column,
 )
 
@@ -46,6 +49,21 @@ def duplicates(dataset_id: str, request: DuplicateRequest = Body(default=Duplica
 @router.post("/{dataset_id}/preprocess/duplicates/preview")
 def duplicates_preview(dataset_id: str):
     return preview_duplicates(dataset_id)
+
+
+@router.post("/{dataset_id}/preprocess/standardization/preview")
+def standardization_preview(dataset_id: str, request: dict):
+    return preview_standardization(dataset_id, request["column"])
+
+
+@router.post("/{dataset_id}/preprocess/normalization/preview")
+def normalization_preview(dataset_id: str, request: dict):
+    return preview_normalization(dataset_id, request["column"])
+
+
+@router.post("/{dataset_id}/preprocess/iqr/preview")
+def iqr_preview(dataset_id: str, request: dict):
+    return preview_iqr_analysis(dataset_id, request["column"])
 
 
 @router.post("/{dataset_id}/preprocess/dtype")

@@ -194,28 +194,88 @@ def recommendations(dataset_id: str) -> dict:
     datetime = datetime_column_names(frame)
     categorical = [column for column in frame.columns if column not in numeric + datetime]
     charts = []
-    for x_column, y_column in itertools.islice(itertools.product(numeric, numeric), 0, 100):
+
+    for x_column, y_column in itertools.islice(itertools.product(numeric, numeric), 0, 50):
         if x_column != y_column:
-            charts.append({"chart_type": "scatter", "x_column": str(x_column), "y_column": str(y_column),
-                           "reason": "Relationship between two numerical columns"})
-    for x_column, y_column in itertools.islice(itertools.product(categorical, numeric), 0, 100):
-        charts.append({"chart_type": "bar", "x_column": str(x_column), "y_column": str(y_column),
-                       "reason": "Categorical column compared with numerical values"})
-    for x_column, y_column in itertools.islice(itertools.product(datetime, numeric), 0, 100):
-        charts.append({"chart_type": "line", "x_column": str(x_column), "y_column": str(y_column),
-                       "reason": "Numerical values over time"})
+            pair = frame[[x_column, y_column]].dropna()
+            correlation = None
+            if len(pair) > 1 and pair[x_column].nunique(dropna=True) > 1 and pair[y_column].nunique(dropna=True) > 1:
+                correlation = float(pair[[x_column, y_column]].corr().iloc[0, 1])
+            charts.append({
+                "chart_type": "scatter",
+                "x_column": str(x_column),
+                "y_column": str(y_column),
+                "reason": "Both columns are numeric and contain enough non-null observations to compare their relationship.",
+                "purpose": f"Explore the relationship between {x_column} and {y_column}.",
+                "statistics": {"correlation": json_value(correlation), "sample_size": int(len(pair))},
+            })
+
+    for x_column, y_column in itertools.islice(itertools.product(categorical, numeric), 0, 50):
+        charts.append({
+            "chart_type": "bar",
+            "x_column": str(x_column),
+            "y_column": str(y_column),
+            "reason": "A categorical field is grouped against a numeric measure.",
+            "purpose": f"Compare the distribution of {y_column} across {x_column}.",
+            "statistics": {"rows_used": int(frame.dropna(subset=[x_column, y_column]).shape[0])},
+        })
+
+    for x_column, y_column in itertools.islice(itertools.product(datetime, numeric), 0, 50):
+        charts.append({
+            "chart_type": "line",
+            "x_column": str(x_column),
+            "y_column": str(y_column),
+            "reason": "The date column provides an ordered timeline for the numeric measure.",
+            "purpose": f"Track how {y_column} changes across {x_column}.",
+            "statistics": {"rows_used": int(frame.dropna(subset=[x_column, y_column]).shape[0])},
+        })
+
     for column in numeric:
-        charts.append({"chart_type": "histogram", "x_column": str(column), "y_column": None,
-                       "reason": "Distribution of a numerical column"})
-        charts.append({"chart_type": "box", "x_column": str(column), "y_column": None,
-                       "reason": "Distribution and outliers of a numerical column"})
+        charts.append({
+            "chart_type": "histogram",
+            "x_column": str(column),
+            "y_column": None,
+            "reason": "The column is numeric and a distribution view helps identify skew and spread.",
+            "purpose": f"Understand the distribution of {column}.",
+            "statistics": {"sample_size": int(frame[column].dropna().shape[0])},
+        })
+        charts.append({
+            "chart_type": "box",
+            "x_column": str(column),
+            "y_column": None,
+            "reason": "The column is numeric and this highlights spread and outliers.",
+            "purpose": f"Inspect the spread and outlier behavior of {column}.",
+            "statistics": {"sample_size": int(frame[column].dropna().shape[0])},
+        })
+
     for column in categorical:
-        charts.append({"chart_type": "bar", "x_column": str(column), "y_column": None,
-                       "reason": "Frequency of categories"})
-    for x_column, y_column in itertools.islice(itertools.product(categorical, numeric), 0, 100):
+        if frame[column].nunique(dropna=True) <= 50:
+            charts.append({
+                "chart_type": "bar",
+                "x_column": str(column),
+                "y_column": None,
+                "reason": "The field is categorical and its category frequencies are meaningful.",
+                "purpose": f"Review the frequency distribution of {column}.",
+                "statistics": {"distinct_categories": int(frame[column].nunique(dropna=True))},
+            })
+
+    for x_column, y_column in itertools.islice(itertools.product(categorical, numeric), 0, 50):
         if frame[x_column].nunique(dropna=True) <= 50:
-            charts.append({"chart_type": "pie", "x_column": str(x_column), "y_column": str(y_column),
-                           "reason": "Numerical values by a low-cardinality category"})
-            charts.append({"chart_type": "box", "x_column": str(x_column), "y_column": str(y_column),
-                           "reason": "Numerical distribution by category"})
+            charts.append({
+                "chart_type": "pie",
+                "x_column": str(x_column),
+                "y_column": str(y_column),
+                "reason": "A low-cardinality category can be shown as a share of the numeric total without overwhelming the viewer.",
+                "purpose": f"See how {y_column} is distributed across the categories in {x_column}.",
+                "statistics": {"distinct_categories": int(frame[x_column].nunique(dropna=True))},
+            })
+            charts.append({
+                "chart_type": "box",
+                "x_column": str(x_column),
+                "y_column": str(y_column),
+                "reason": "This compares the numeric distribution within each category.",
+                "purpose": f"Inspect the distribution of {y_column} by {x_column}.",
+                "statistics": {"distinct_categories": int(frame[x_column].nunique(dropna=True))},
+            })
+
     return {"recommendations": charts[:250]}

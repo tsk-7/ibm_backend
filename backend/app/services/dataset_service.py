@@ -71,25 +71,30 @@ def dataset_info(dataset_id: str) -> dict:
 
 
 def dataset_profile(dataset_id: str) -> dict:
+    from app.services.dataset_profiler import profile_dataset
+
     dataset, frame = load_current(dataset_id)
-    numeric_columns = list(frame.select_dtypes(include=["number"]).columns)
-    datetime_columns = datetime_column_names(frame)
-    categorical_columns = [column for column in frame.columns if column not in numeric_columns + datetime_columns]
+    profile = profile_dataset(dataset_id)
     missing = {str(column): int(count) for column, count in frame.isna().sum().items()}
     unique = {str(column): int(frame[column].nunique(dropna=True)) for column in frame.columns}
-    return {
+    payload = {
         "dataset_id": dataset.dataset_id,
         "total_rows": int(len(frame)),
         "total_columns": int(len(frame.columns)),
-        "numerical_columns": [str(column) for column in numeric_columns],
-        "categorical_columns": [str(column) for column in categorical_columns],
-        "datetime_columns": [str(column) for column in datetime_columns],
+        "numerical_columns": [str(column) for column in profile["numerical_columns"]],
+        "categorical_columns": [str(column) for column in profile["categorical_columns"]],
+        "datetime_columns": [str(column) for column in profile["datetime_columns"]],
         "missing_values": {"by_column": missing, "total": int(frame.isna().sum().sum())},
         "duplicate_rows": int(frame.duplicated().sum()),
+        "duplicate_percentage": profile["general"]["duplicate_percentage"],
         "unique_values": unique,
         "memory_usage_bytes": int(frame.memory_usage(index=True, deep=True).sum()),
         "data_types": {str(column): str(dtype) for column, dtype in frame.dtypes.items()},
+        "general": profile["general"],
+        "column_profiles": profile["columns"],
+        "summary": profile["summary"],
     }
+    return payload
 
 
 def dataset_preview(dataset_id: str, limit: int, offset: int) -> dict:
