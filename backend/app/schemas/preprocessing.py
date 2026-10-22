@@ -11,6 +11,7 @@ class MissingValuesRequest(BaseModel):
 
 class DuplicateRequest(BaseModel):
     action: Literal["detect", "remove"] = "detect"
+    case_insensitive: bool = True
 
 
 class DtypeRequest(BaseModel):

@@ -7,6 +7,8 @@ from typing import BinaryIO
 
 import pandas as pd
 
+from app.utils.dataframe_utils import normalize_missing_values
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SUPPORTED_EXTENSIONS = {".csv", ".xlsx", ".xls"}
@@ -32,10 +34,17 @@ def read_dataframe(path: str | Path) -> pd.DataFrame:
     source = Path(path)
     extension = source.suffix.lower()
     if extension == ".csv":
-        return pd.read_csv(source)
-    if extension in {".xlsx", ".xls"}:
-        return pd.read_excel(source)
-    raise ValueError("Unsupported dataset format")
+        frame = pd.read_csv(source, keep_default_na=True)
+    elif extension in {".xlsx", ".xls"}:
+        frame = pd.read_excel(source)
+    else:
+        raise ValueError("Unsupported dataset format")
+    if frame.empty and len(frame.columns) == 0:
+        raise ValueError("Dataset is empty or has no columns")
+    if frame.columns.duplicated().any():
+        duplicates = [str(column) for column in frame.columns[frame.columns.duplicated()]]
+        raise ValueError(f"Dataset contains duplicate column names: {', '.join(duplicates)}")
+    return normalize_missing_values(frame)
 
 
 def save_dataframe_csv(frame: pd.DataFrame, path: str | Path) -> None:

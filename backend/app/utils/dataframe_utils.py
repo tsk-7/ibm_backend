@@ -6,6 +6,29 @@ import numpy as np
 import pandas as pd
 
 
+MISSING_VALUE_MARKERS = frozenset({
+    "",
+    "na",
+    "n/a",
+    "nan",
+    "null",
+    "none",
+    "nil",
+    "?",
+})
+
+
+def normalize_missing_values(frame: pd.DataFrame) -> pd.DataFrame:
+    """Normalize textual missing-value markers without changing non-text values."""
+    result = frame.copy()
+    for column in result.select_dtypes(include=["object", "string"]).columns:
+        series = result[column]
+        stripped = series.astype("string").str.strip()
+        missing = stripped.str.casefold().isin(MISSING_VALUE_MARKERS)
+        result.loc[missing.fillna(False), column] = pd.NA
+    return result
+
+
 def json_value(value: Any) -> Any:
     if value is None or value is pd.NA or value is pd.NaT:
         return None

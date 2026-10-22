@@ -43,12 +43,12 @@ def missing_values(dataset_id: str, request: MissingValuesRequest):
 
 @router.post("/{dataset_id}/preprocess/duplicates")
 def duplicates(dataset_id: str, request: DuplicateRequest = Body(default=DuplicateRequest())):
-    return process_duplicates(dataset_id, request.action)
+    return process_duplicates(dataset_id, request.action, request.case_insensitive)
 
 
 @router.post("/{dataset_id}/preprocess/duplicates/preview")
-def duplicates_preview(dataset_id: str):
-    return preview_duplicates(dataset_id)
+def duplicates_preview(dataset_id: str, request: DuplicateRequest = Body(default=DuplicateRequest())):
+    return preview_duplicates(dataset_id, case_insensitive=request.case_insensitive)
 
 
 @router.post("/{dataset_id}/preprocess/standardization/preview")

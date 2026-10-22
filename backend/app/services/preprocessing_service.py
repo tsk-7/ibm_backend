@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 
 from app.database.database import get_connection
-from app.services.dataset_service import load_current
+from app.services.dataset_service import invalidate_frame_cache, load_current
 from app.utils.dataframe_utils import column_metadata, dataframe_records, json_value, missing_count
 from app.utils.file_utils import data_directory, save_dataframe_csv, utc_now
 
@@ -22,6 +22,7 @@ def _commit(dataset_id: str, frame: pd.DataFrame, operation: str, column_name: s
     backup_path = backup_dir / f"{dataset_id}_{utc_now().replace(':', '').replace('+', '_')}_{uuid.uuid4().hex[:8]}.csv"
     shutil.copy2(current, backup_path)
     save_dataframe_csv(frame, current)
+    invalidate_frame_cache(dataset_id)
     now = utc_now()
     with get_connection() as connection:
         connection.execute(
@@ -368,10 +369,31 @@ def process_missing_values(dataset_id: str, column: str | None, method: str, val
     return result
 
 
-def process_duplicates(dataset_id: str, action: str) -> dict:
+def _canonicalize_text_variants(frame: pd.DataFrame) -> tuple[pd.DataFrame, int]:
+    result = frame.copy()
+    changes = 0
+    for column in result.select_dtypes(include=["object", "string"]).columns:
+        series = result[column]
+        keys = series.map(lambda value: value.strip().casefold() if isinstance(value, str) else value)
+        canonical_by_key: dict[Any, Any] = {}
+        for key, value in zip(keys, series):
+            if pd.isna(key) or key in canonical_by_key:
+                continue
+            canonical_by_key[key] = value
+        normalized = keys.map(canonical_by_key)
+        changes += int((series.notna() & normalized.notna() & (series != normalized)).sum())
+        result[column] = normalized
+    return result, changes
+
+
+def process_duplicates(dataset_id: str, action: str, case_insensitive: bool = True) -> dict:
     _, frame = load_current(dataset_id)
     rows_before = len(frame)
-    duplicate_count = int(frame.duplicated().sum())
+    comparison_frame = frame
+    normalized_cells = 0
+    if case_insensitive:
+        comparison_frame, normalized_cells = _canonicalize_text_variants(frame)
+    duplicate_count = int(comparison_frame.duplicated().sum())
     if action == "detect":
         return {
             "duplicate_count": duplicate_count,
@@ -379,23 +401,32 @@ def process_duplicates(dataset_id: str, action: str) -> dict:
             "percentage": round(100 * duplicate_count / rows_before, 2) if rows_before else 0.0,
             "rows_before": rows_before,
             "rows_after": rows_before,
+            "normalized_cells": normalized_cells,
+            "case_insensitive": case_insensitive,
         }
     if action != "remove":
         raise ValueError("Invalid duplicate action")
-    if duplicate_count == 0:
+    if duplicate_count == 0 and normalized_cells == 0:
         return {"duplicate_count": 0, "count": 0, "percentage": 0.0, "rows_before": rows_before,
-            "rows_after": rows_before, "duplicates_removed": 0, "success": True}
-    frame = frame.drop_duplicates()
-    _commit(dataset_id, frame, "Remove duplicates", None, rows_before, f"{duplicate_count} duplicate rows removed")
+            "rows_after": rows_before, "duplicates_removed": 0, "normalized_cells": normalized_cells,
+            "case_insensitive": case_insensitive, "success": True}
+    frame = comparison_frame.drop_duplicates()
+    _commit(dataset_id, frame, "Remove duplicates", None, rows_before,
+            f"{duplicate_count} duplicate rows removed; {normalized_cells} text variants normalized")
     return {"duplicate_count": duplicate_count, "count": duplicate_count,
             "percentage": round(100 * duplicate_count / rows_before, 2) if rows_before else 0.0,
             "rows_before": rows_before, "rows_after": len(frame),
-            "duplicates_removed": rows_before - len(frame), "success": True}
+            "duplicates_removed": rows_before - len(frame), "normalized_cells": normalized_cells,
+            "case_insensitive": case_insensitive, "success": True}
 
 
-def preview_duplicates(dataset_id: str, sample_limit: int = 10) -> dict:
+def preview_duplicates(dataset_id: str, sample_limit: int = 10, case_insensitive: bool = True) -> dict:
     _, frame = load_current(dataset_id)
-    duplicate_mask = frame.duplicated(keep="first")
+    comparison_frame = frame
+    normalized_cells = 0
+    if case_insensitive:
+        comparison_frame, normalized_cells = _canonicalize_text_variants(frame)
+    duplicate_mask = comparison_frame.duplicated(keep="first")
     duplicate_count = int(duplicate_mask.sum())
     samples = dataframe_records(frame.loc[duplicate_mask].head(sample_limit))
     return {
@@ -404,6 +435,8 @@ def preview_duplicates(dataset_id: str, sample_limit: int = 10) -> dict:
         "percentage": round(100 * duplicate_count / len(frame), 2) if len(frame) else 0.0,
         "rows_before": int(len(frame)),
         "estimated_rows_after_removal": int(len(frame) - duplicate_count),
+        "normalized_cells": normalized_cells,
+        "case_insensitive": case_insensitive,
         "sample_columns": [str(column) for column in frame.columns],
         "sample_duplicate_rows": samples,
     }

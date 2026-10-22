@@ -15,3 +15,8 @@ backend/data/backups/*
 !backend/data/uploads/.gitkeep
 !backend/data/processed/.gitkeep
 !backend/data/backups/.gitkeep
+frontend/node_modules/
+frontend/dist/
+frontend/*.tsbuildinfo
+frontend/vite.config.js
+frontend/vite.config.d.ts

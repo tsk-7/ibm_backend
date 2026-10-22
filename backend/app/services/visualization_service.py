@@ -278,4 +278,4 @@ def recommendations(dataset_id: str) -> dict:
                 "statistics": {"distinct_categories": int(frame[x_column].nunique(dropna=True))},
             })
 
-    return {"recommendations": charts[:250]}
+    return {"recommendations": charts[:10]}

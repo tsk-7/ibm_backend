@@ -57,3 +57,26 @@ def test_missing_value_preview_returns_dataset_specific_impact_report(client):
     assert "impact" in body
     assert body["before"]["missing_count"] == 1
     assert body["after"]["missing_count"] == 0
+
+
+def test_missing_markers_are_normalized_consistently(client):
+    content = (
+        "name,score,notes\n"
+        "Alice,10,ok\n"
+        "Bob,NA,   \n"
+        "Carol, null,?\n"
+    ).encode()
+    response = client.post(
+        "/api/datasets/upload",
+        files={"file": ("markers.csv", content, "text/csv")},
+    )
+    assert response.status_code == 201, response.text
+    dataset_id = response.json()["dataset_id"]
+
+    profile = client.get(f"/api/datasets/{dataset_id}/profile").json()
+    assert profile["missing_values"]["total"] == 4
+    assert profile["missing_values"]["by_column"] == {
+        "name": 0,
+        "score": 2,
+        "notes": 2,
+    }
