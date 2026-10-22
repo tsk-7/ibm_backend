@@ -3,20 +3,12 @@ services:
     name: ibm-datainsight-backend
     runtime: python
     rootDir: backend
-    plan: starter
+    plan: free
     buildCommand: pip install -r requirements-render.txt
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /api/health
     autoDeploy: true
     envVars:
-      - key: DATAINSIGHT_DB_PATH
-        value: /var/data/datainsight.db
-      - key: DATAINSIGHT_DATA_DIR
-        value: /var/data/data
-      - key: CHROMA_PATH
-        value: /var/data/chroma
-      - key: FASTEMBED_CACHE_PATH
-        value: /var/data/models
       - key: AI_EAGER_INITIALIZE
         value: "false"
       - key: LOG_LEVEL
@@ -31,7 +23,3 @@ services:
         value: nvidia/nemotron-3.5-lightning:free
       - key: AGENT_ADMIN_TOKEN
         sync: false
-    disk:
-      name: ibm-datainsight-data
-      mountPath: /var/data
-      sizeGB: 10
