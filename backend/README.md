@@ -39,6 +39,31 @@ Run the integration tests from this directory:
 pytest
 ```
 
+## Deploy on Render
+
+The repository includes a Render Blueprint at `../render.yaml`. In Render, choose
+**New > Blueprint**, connect this repository, and apply the Blueprint. It creates
+the `ibm-datainsight-backend` web service with:
+
+- `pip install -r requirements-render.txt` as the build command
+- `uvicorn app.main:app --host 0.0.0.0 --port $PORT` as the start command
+- `/api/health` as the health check
+- a persistent disk mounted at `/var/data` for SQLite, uploads, processed files,
+  Chroma data, and the embedding cache
+
+After the service is created, set these environment variables in Render:
+
+- `OPENROUTER_API_KEY`: the backend-only OpenRouter key (optional; omit it for
+  deterministic dataset answers without LLM synthesis)
+- `CORS_ORIGINS`: comma-separated production frontend origin(s), for example
+  `https://your-frontend.example.com`
+- `AGENT_ADMIN_TOKEN`: a strong random token if the reindex endpoint is exposed
+
+The Blueprint uses Render's Starter plan because persistent disks are required
+for uploaded datasets and the local SQLite/vector-store files. Use an external
+MySQL database and object storage instead if a no-disk or horizontally scaled
+deployment is required.
+
 ## API
 
 All application endpoints are under `/api`. JSON requests and responses use UTF-8; download endpoints return file streams.

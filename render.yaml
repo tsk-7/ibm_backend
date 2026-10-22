@@ -1,0 +1,37 @@
+services:
+  - type: web
+    name: ibm-datainsight-backend
+    runtime: python
+    rootDir: backend
+    plan: starter
+    buildCommand: pip install -r requirements-render.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: DATAINSIGHT_DB_PATH
+        value: /var/data/datainsight.db
+      - key: DATAINSIGHT_DATA_DIR
+        value: /var/data/data
+      - key: CHROMA_PATH
+        value: /var/data/chroma
+      - key: FASTEMBED_CACHE_PATH
+        value: /var/data/models
+      - key: AI_EAGER_INITIALIZE
+        value: "false"
+      - key: LOG_LEVEL
+        value: INFO
+      - key: CORS_ORIGINS
+        sync: false
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: OPENROUTER_BASE_URL
+        value: https://openrouter.ai/api/v1
+      - key: OPENROUTER_MODEL
+        value: nvidia/nemotron-3.5-lightning:free
+      - key: AGENT_ADMIN_TOKEN
+        sync: false
+    disk:
+      name: ibm-datainsight-data
+      mountPath: /var/data
+      sizeGB: 10
